@@ -1,0 +1,14 @@
+            - name: Algorithmia test-algo
+  # You may pin to the exact commit or the version.
+  # uses: algorithmiaio/test-algo-action@cbfe0b98066531ff84d2a367c733a25e09ab7b8d
+  uses: algorithmiaio/test-algo-action@v0.1.1-rc6
+  with:
+    # your typical Algorithmia API key
+    regular_api_key: 
+    # The API address for the Algorithmia Cluster you wish to connect to
+    api_address: # optional, default is https://api.algorithmia.com
+    # The name of the Algorithm you want to test
+    algorithm_name: 
+    # A list of Json Case objects that describe the desired test cases
+    cases: 
+          
