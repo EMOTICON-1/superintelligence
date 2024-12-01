@@ -1,4 +1,6 @@
-# This workflow will build a docker container, publish it to Google Container
+git add .github/workflows/google.yml
+git commit -m "Add Google workflow"
+git push# This workflow will build a docker container, publish it to Google Container
 # Registry, and deploy it to GKE when there is a push to the "main"
 # branch.
 #
