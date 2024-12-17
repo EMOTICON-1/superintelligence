@@ -1,4 +1,4 @@
- class Eos: 
+#sudo su &&  class Eos: 
  class Eos:  
  import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, AdamW
