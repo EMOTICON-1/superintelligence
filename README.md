@@ -1,5 +1,193 @@
 #sudo su &&  class Eos: 
  class Eos:  
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.optim.lr_scheduler import CosineAnnealingLR
+import networkx as nx
+from qiskit import QuantumCircuit, Aer, transpile, assemble
+from qiskit.circuit.library import EfficientSU2, ZZFeatureMap
+from qiskit.algorithms.optimizers import COBYLA, SPSA
+from qiskit_machine_learning.algorithms.classifiers import VQC
+from qiskit.algorithms import VQE
+from qiskit.quantum_info import Statevector
+from transformers import AutoModel, AutoTokenizer
+from torch_geometric.nn import RGCNConv, GATConv
+from torch.nn.utils.rnn import pad_sequence
+import pennylane as qml
+import numpy as np
+from typing import List, Tuple, Dict
+
+# --- Quantum Core ---
+class QuantumCore(nn.Module):
+    def __init__(self, num_qubits, depth):
+        super().__init__()
+        self.num_qubits = num_qubits
+        self.depth = depth
+        self.circuit = EfficientSU2(num_qubits, reps=depth)
+        self.simulator = Aer.get_backend('aer_simulator_statevector')
+        self.feature_map = ZZFeatureMap(num_qubits)  # Using ZZFeatureMap
+
+    def forward(self, input_data):
+        # Normalize data
+        norm_data = input_data / input_data.norm()
+        qc = QuantumCircuit(self.num_qubits)
+        qc.append(self.feature_map, range(self.num_qubits))  # Apply feature map
+        for i, val in enumerate(norm_data):
+            qc.ry(val.item(), i)
+        qc.append(self.circuit, range(self.num_qubits))
+
+        # Use VQC for parameterized quantum circuits
+        vqc = VQC(
+            feature_map=self.feature_map,
+            ansatz=self.circuit,
+            loss='cross_entropy',
+            optimizer=COBYLA(),
+            quantum_instance=self.simulator
+        )
+        # (Training the VQC is omitted here for brevity, but it's crucial)
+
+        # Simulate quantum circuit
+        transpiled = transpile(qc, self.simulator)
+        qobj = assemble(transpiled)
+        result = self.simulator.run(qobj).result()
+        state_vector = result.get_statevector()
+
+        return torch.tensor(state_vector.real)
+
+# --- Transformer Reasoning Module ---
+class TransformerReasoning(nn.Module):
+    def __init__(self, model_name):
+        super().__init__()
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.transformer = AutoModel.from_pretrained(model_name)
+        self.hidden_dim = self.transformer.config.hidden_size
+
+    def forward(self, input_text, context_text):
+        inputs = self.tokenizer(input_text, context_text, return_tensors='pt',
+                                 truncation=True, padding=True)
+        outputs = self.transformer(**inputs, output_attentions=True)
+
+        # Access and utilize cross-attention weights (example)
+        cross_attentions = outputs.cross_attentions[-1]  # Last layer's attention
+        attended_context = torch.bmm(cross_attentions,
+                                     outputs.last_hidden_state)  # Context weighted by attention
+        # ... (Further processing of attended_context)
+
+        return outputs.pooler_output
+
+# --- Knowledge Graph Module ---
+class KnowledgeGraph(nn.Module):
+    def __init__(self, num_nodes, embedding_dim=128, num_relations=4):
+        super().__init__()
+        self.node_embeddings = nn.Embedding(num_nodes, embedding_dim)
+        self.relation_embeddings = nn.Embedding(num_relations, embedding_dim)
+        self.rgcn = RGCNConv(embedding_dim, embedding_dim, num_relations)
+        self.gat = GATConv(embedding_dim, embedding_dim, heads=4)
+
+    def forward(self, x, edge_index, edge_type):
+        node_embeddings = self.node_embeddings(x)
+        rel_embeddings = self.relation_embeddings(edge_type)
+        graph_rep = self.rgcn(node_embeddings, edge_index, rel_embeddings)
+        graph_rep = self.gat(graph_rep, edge_index)  # Apply GAT
+        return torch.mean(graph_rep, dim=0)
+
+# --- Multi-Modal Neural Network ---
+class MultiModalNN(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.GELU(),
+            nn.BatchNorm1d(hidden_size),
+            nn.Dropout(0.4),
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+            nn.BatchNorm1d(hidden_size),
+            nn.Dropout(0.4),
+            nn.Linear(hidden_size, output_size),
+        )
+        self.threshold = 0.1  # Threshold for dynamic sparsity
+
+    def forward(self, x):
+        # Dynamic sparsity with magnitude pruning
+        for layer in self.layers:
+            if isinstance(layer, nn.Linear):
+                mask = torch.abs(layer.weight) > self.threshold
+                layer.weight.data *= mask
+        return self.layers(x)
+
+# --- Extraordinary Intelligence Framework ---
+class ExtraordinaryIntelligence(nn.Module):
+    def __init__(self, num_qubits, depth, model_name, num_nodes,
+                 embedding_dim, input_size, hidden_size, output_size):
+        super().__init__()
+        self.quantum_core = QuantumCore(num_qubits, depth)
+        self.reasoning_module = TransformerReasoning(model_name)
+        self.knowledge_graph = KnowledgeGraph(num_nodes, embedding_dim)
+        self.ml_nn = MultiModalNN(input_size, hidden_size, output_size)
+
+        # Multi-head attention for dynamic feature weighting
+        self.attention = nn.MultiheadAttention(embed_dim=hidden_size,
+                                               num_heads=8)
+
+        # Q-network for Q-learning
+        self.q_network = nn.Sequential(
+            nn.Linear(hidden_size * 4, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, output_size))
+
+    def forward(self, quantum_input, reasoning_input, context_input,
+                graph_data, edge_index, edge_type, ml_input):
+        # Process each module
+        quantum_out = self.quantum_core(quantum_input)
+        reasoning_out = self.reasoning_module(reasoning_input, context_input)
+        graph_out = self.knowledge_graph(graph_data, edge_index, edge_type)
+        ml_out = self.ml_nn(ml_input)
+
+        # Combine outputs using multi-head attention
+        combined_features = torch.stack(
+            [quantum_out, reasoning_out, graph_out, ml_out], dim=0)
+        combined_features, _ = self.attention(combined_features,
+                                             combined_features,
+                                             combined_features)
+        combined_features = torch.mean(combined_features, dim=0)
+
+        # Q-learning output
+        q_values = self.q_network(combined_features)
+
+        return q_values  # Return Q-values for action selection
+
+# --- Example usage ---
+# (Illustrative example with random data)
+num_qubits = 4
+depth = 3
+model_name = 'gpt2'  # Smaller model for illustration
+num_nodes = 10
+embedding_dim = 16
+input_size = 8
+hidden_size = 32
+output_size = 5
+
+model = ExtraordinaryIntelligence(num_qubits, depth, model_name, num_nodes,
+                                 embedding_dim, input_size, hidden_size,
+                                 output_size)
+
+# Generate random input data
+quantum_input = torch.randn(num_qubits)
+reasoning_input = "This is an example input sentence."
+context_input = "This is some context for the input."
+graph_data = torch.randint(0, num_nodes, (num_nodes,))
+edge_index = torch.randint(0, num_nodes, (2, 10))
+edge_type = torch.randint(0, 4, (10,))
+ml_input = torch.randn(input_size)
+
+# Run the model
+output = model(quantum_input, reasoning_input, context_input, graph_data,
+              edge_index, edge_type, ml_input)
+
+print(output)
+
  import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, AdamW
 from torch.utils.data import Dataset, DataLoader
